@@ -2,11 +2,11 @@
 
 namespace PKeidel\BankToLaravel\Commands;
 
-use App\Models\Bookings;
 use Illuminate\Console\Command;
 use Fhp\FinTs;
 use PKeidel\BankToLaravel\Events\Error;
 use PKeidel\BankToLaravel\Events\NewEntry;
+use PKeidel\BankToLaravel\Models\Bookings;
 
 class ImportEntries extends Command {
 	/**
