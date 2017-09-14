@@ -35,7 +35,7 @@ class ImportEntries extends Command {
 			intval(env('FHP_BANK_PORT')),
 			env('FHP_BANK_CODE'),
 			env('FHP_ONLINE_BANKING_USERNAME'),
-			env('FHP_ONLINE_BANKING_PIN')
+			decrypt(env('FHP_ONLINE_BANKING_PIN'))
 		);
 
 		try {
