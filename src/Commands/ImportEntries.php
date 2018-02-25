@@ -60,13 +60,12 @@ class ImportEntries extends Command {
 
 				/** @var \Fhp\Model\StatementOfAccount\Transaction $transaction */
 				$i  = $oneAccount->getIban();
-				$d1 = $transaction->getBookingDate()->format('U');
-				$d2 = $transaction->getValutaDate()->format('U');
+				$v  = $transaction->getValutaDate()->format('U');
 				$a  = $transaction->getAmount();
 				$c  = $transaction->getCreditDebit();
 				$b  = $transaction->getBookingText();
 				$d  = $transaction->getDescription1();
-				$md5 = md5("$i-$d1-$d2-$a-$c-$b-$d");
+				$md5 = md5("$i-$v-$a-$c-$b-$d");
 
 				$booking = Bookings::firstOrNew(['search' => $md5]);
 				if(!$booking->exists) {
