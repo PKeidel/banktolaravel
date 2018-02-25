@@ -48,6 +48,9 @@ class ImportEntries extends Command {
 		/** @var \Fhp\Model\SEPAAccount $oneAccount */
 		$oneAccount = $accounts[0];
 
+		/** @var \Fhp\Model\Saldo $saldo */
+		$saldo = $fints->getSaldo($oneAccount);
+
 		$from = new \DateTime(env('FHP_BANK_START', '1 days ago'));
 		$to   = new \DateTime();
 		$soa = $fints->getStatementOfAccount($oneAccount, $from, $to);
@@ -82,7 +85,7 @@ class ImportEntries extends Command {
 					$booking->name = $transaction->getName();
 					// echo "HERE THE NEW ENTRY WILL BE SAVED TO DB normally...\n";
 					$booking->save();
-					event(new NewEntry($booking->toArray()));
+					event(new NewEntry($booking->toArray(), $saldo->getAmount()));
 				}
 			}
 		}
