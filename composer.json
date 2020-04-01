@@ -1,7 +1,7 @@
 {
   "name": "pkeidel/banktolaravel",
   "description": "Reads booking informations from an bank account and saves it to a local table in the database",
-  "keywords": ["laravel5", "banktolaravel", "bank2laravel"],
+  "keywords": ["laravel", "banktolaravel", "bank2laravel"],
   "license": "MIT",
   "authors": [
     {
@@ -10,7 +10,7 @@
     }
   ],
   "require": {
-    "php": "^7.1.0",
+    "php": "^7.2.0",
     "nemiah/php-fints": "^2.0",
     "laravel/framework": "^7.1"
   },

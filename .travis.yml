@@ -1,8 +1,9 @@
 language: php
 
 php:
-  - '7.1'
-  - nightly
+  - '7.2'
+  - '7.3'
+  - '7.4'
 
 install: travis_retry composer update --prefer-dist --no-interaction --prefer-stable --no-suggest
 
