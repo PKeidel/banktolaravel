@@ -54,9 +54,8 @@ Every time a new Entry is added to the database, an `PKeidel\BankToLaravel\Event
 In some ServiceProvides `boot()` function you could simply listen to the events and add some own logic like sending an E-Mail or notify you via some other way.
 
 ```php
-Event::listen('PKeidel\BankToLaravel\Events\Error', function (Error $entry) {
-    Log::error("BankToLaravel error: $entry->exception");
-    optional(Users::where('iban', $entry->data['ref_iban'])->first())->notify(new NewBankaccountBooking($entry));
+Event::listen('PKeidel\BankToLaravel\Events\Error', function (Error $error) {
+    Log::error("BankToLaravel error: $error->exception");
 });
 
 Event::listen('PKeidel\BankToLaravel\Events\NewEntry', function (NewEntry $entry) {
