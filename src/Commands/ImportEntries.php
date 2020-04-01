@@ -2,9 +2,21 @@
 
 namespace PKeidel\BankToLaravel\Commands;
 
+use Carbon\Carbon;
+use DateTime;
+use Exception;
+use Fhp\Action\GetSEPAAccounts;
+use Fhp\Action\GetStatementOfAccount;
+use Fhp\BaseAction;
+use Fhp\Credentials;
+use Fhp\CurlException;
+use Fhp\FinTsNew;
+use Fhp\FinTsOptions;
+use Fhp\Model\StatementOfAccount\Statement;
+use Fhp\Model\TanRequestChallengeImage;
+use Fhp\Protocol\ServerException;
 use Illuminate\Console\Command;
-use Fhp\FinTs;
-use PKeidel\BankToLaravel\Events\Error;
+use Illuminate\Support\Facades\Log;
 use PKeidel\BankToLaravel\Events\NewEntry;
 use PKeidel\BankToLaravel\Models\Bookings;
 
@@ -23,71 +35,175 @@ class ImportEntries extends Command {
 	 */
 	protected $description = 'Reads booking informations from an bank account and saves it to a local table in the database';
 
-	/**
-	 * Execute the console command.
-	 *
-	 * @return mixed
-	 */
-	public function handle() {
-		$accounts = null;
-		$fints = new FinTs(
-			env('FHP_BANK_URL'),
-			intval(env('FHP_BANK_PORT')),
-			env('FHP_BANK_CODE'),
-			env('FHP_ONLINE_BANKING_USERNAME'),
-			decrypt(env('FHP_ONLINE_BANKING_PIN'))
-		);
+    private $options;
+    private $credentials;
+    private $fints;
 
-		try {
-			$accounts = $fints->getSEPAAccounts();
-		} catch(\Exception $e) {
-			event(new Error($e));
-			exit;
-		}
+    public function __construct() {
+        $this->options = new FinTsOptions();
+        $this->options->url = env('FHP_BANK_URL');
+        $this->options->bankCode = env('FHP_BANK_CODE');
+        $this->options->productName = env('FHP_ONLINE_REGISTRATIONNO');
+        $this->options->productVersion = '1.0';
+        $this->credentials = Credentials::create(env('FHP_ONLINE_BANKING_USERNAME'), decrypt(env('FHP_ONLINE_BANKING_PIN')));
 
-		/** @var \Fhp\Model\SEPAAccount $oneAccount */
-		$oneAccount = $accounts[0];
+        parent::__construct();
+    }
 
-		/** @var \Fhp\Model\Saldo $saldo */
-		$saldo = $fints->getSaldo($oneAccount);
+    public function wasModelRecentlyCreated(Bookings $booking) {
+        return Carbon::now()->diffInSeconds($booking->created_at) < 5;
+    }
 
-		$from = new \DateTime(env('FHP_BANK_START', '1 days ago'));
-		$to   = new \DateTime();
-		$soa = $fints->getStatementOfAccount($oneAccount, $from, $to);
+    /**
+     * Execute the console command.
+     *
+     * @return mixed
+     */
+    public function handle() {
+//        $this->info("checking bank account(s)...");
 
-		foreach ($soa->getStatements() as $statement) {
-			// $saldo = $statement->getCreditDebit() == Statement::CD_DEBIT ? 0 - $statement->getStartBalance() : $statement->getStartBalance();
-			// $this->alert($statement->getDate()->format('Y-m-d') . ": Start Saldo: $saldo");
-			foreach ($statement->getTransactions() as $transaction) {
-				// Check if entry already exists in the database
+        $fints = $this->getFints();
 
-				/** @var \Fhp\Model\StatementOfAccount\Transaction $transaction */
-				$i  = $oneAccount->getIban();
-				$v  = $transaction->getValutaDate()->format('U');
-				$a  = $transaction->getAmount();
-				$c  = $transaction->getCreditDebit();
-				$b  = $transaction->getBookingText();
-				$d  = $transaction->getDescription1();
-				$md5 = md5("$i-$v-$a-$c-$b-$d");
+        $from = new DateTime(env('FHP_BANK_START', '7 day ago'));
+        $to   = new DateTime();
+        try {
+            $getSepaAccounts = GetSEPAAccounts::create();
+            $fints->execute($getSepaAccounts);
+            if ($getSepaAccounts->needsTan()) {
+                $this->warn('TAN input required!');
+                $this->handleTan($getSepaAccounts);
+            }
+            $accounts = $getSepaAccounts->getAccounts();
+            foreach($accounts as $account) {
+                if(empty(env('FHP_BANK_ACCOUNT')) || env('FHP_BANK_ACCOUNT') !== $account->getAccountNumber()) {
+//                    $this->info("Skipping account: " . $account->getAccountNumber());
+                    continue;
+                }
 
-				$booking = Bookings::firstOrNew(['search' => $md5]);
-				if(!$booking->exists) {
-					$booking->ref_iban = $oneAccount->getIban();
-					$booking->bookingdate = $transaction->getBookingDate();
-					$booking->valutadate = $transaction->getValutaDate();
-					$booking->amount = $transaction->getAmount();
-					$booking->creditdebit = $transaction->getCreditDebit();
-					$booking->bookingtext = $transaction->getBookingText();
-					$booking->description1 = $transaction->getDescription1();
-					$booking->structureddescription = $transaction->getStructuredDescription();
-					$booking->bankcode = $transaction->getBankCode();
-					$booking->accountnumber = $transaction->getAccountNumber();
-					$booking->name = $transaction->getName();
-					// echo "HERE THE NEW ENTRY WILL BE SAVED TO DB normally...\n";
-					$booking->save();
-					event(new NewEntry($booking->toArray(), $saldo->getAmount()));
-				}
-			}
-		}
-	}
+//                $this->info("Importing account: " . $account->getAccountNumber());
+
+                $getStatement = GetStatementOfAccount::create($account, $from, $to);
+                $fints->execute($getStatement);
+//                $this->info("  needsTan(): " . ($getStatement->needsTan() ? 'y' : 'n'));
+                if ($getStatement->needsTan()) {
+                    $this->warn("TAN input required!");
+                    $this->handleTan($getStatement);
+                }
+
+                $soa = $getStatement->getStatement();
+                foreach ($soa->getStatements() as $statement) {
+                    $saldo = $statement->getCreditDebit() == Statement::CD_DEBIT ? 0 - $statement->getStartBalance() : $statement->getStartBalance();
+//                    $this->info($statement->getDate()->format('Y-m-d') . ": Start Saldo: $saldo");
+                    foreach ($statement->getTransactions() as $transaction) {
+//                        $this->info("  - importing: {$transaction->getBookingDate()->format('Y-m-d')} {$transaction->getBookingText()} {$transaction->getCreditDebit()} {$transaction->getAmount()}");
+
+                        $booking = Bookings::updateOrCreate([
+                            'ref_iban' => $account->getIban(),
+                            'valutadate' => $transaction->getValutaDate(),
+                            'bookingdate' => $transaction->getBookingDate(),
+                            'amount' => $transaction->getAmount(),
+                            'creditdebit' => $transaction->getCreditDebit(),
+                            'bookingtext' => $transaction->getBookingText(),
+                            'accountnumber' => $transaction->getAccountNumber(),
+                            'bankcode' => $transaction->getBankCode(),
+                        ], [
+                            'description1' => $transaction->getDescription1(),
+                            'structureddescription' => $transaction->getStructuredDescription(),
+                            'name' => $transaction->getName(),
+                        ]);
+                        if($this->wasModelRecentlyCreated($booking)) {
+                            $this->info("    => this one was new, so fire an NewEntry event");
+                            event(new NewEntry($booking->toArray(), $saldo));
+                        }
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            Log::error($e);
+//            $this->warn("ERROR " . get_class($e) . " ({$e->getFile()}:{$e->getLine()}): " . $e->getMessage());
+//            $this->info($e);
+        }
+    }
+
+    /**
+     * This function is key to how FinTS works in times of PSD2 regulations. Most actions like wire transfers, getting
+     * statements and even logging in can require a TAN, but won't always. Whether a TAN is required depends on the kind of
+     * action, when it was last executed, other parameters like the amount (of a wire transfer) or time span (of a statement
+     * request) and generally the security concept of the particular bank. The TAN requirements may or may not be consistent
+     * with the TAN that the same bank requires for the same action in the web-based online banking interface. Also, banks
+     * may change these requirements over time, so just because your particular bank does not need a TAN for login today
+     * does not mean that it stays that way.
+     *
+     * The TAN can be provided it many different ways. Each application that uses the phpFinTS library has to implement
+     * its own way of asking users for a TAN, depending on its user interfaces. The implementation does not have to be in a
+     * function like this, it can be inlined with the calling code, or live elsewhere. The TAN can be obtained while the
+     * same PHP script is still running (i.e. handleTan() is a blocking function that only returns once the TAN is known),
+     * but it is also possible to interrupt the PHP execution entirely while asking for the TAN.
+     *
+     * @param BaseAction $action Some action that requires a TAN.
+     * @throws CurlException
+     * @throws ServerException
+     */
+    public function handleTan(BaseAction $action) {
+        // Find out what sort of TAN we need, tell the user about it.
+        $tanRequest = $action->getTanRequest();
+        $this->info('The bank requested a TAN, asking: ' . $tanRequest->getChallenge());
+        if ($tanRequest->getTanMediumName() !== null) {
+            $this->info('Please use this device: ' . $tanRequest->getTanMediumName());
+        }
+
+        // Challenge Image for PhotoTan/ChipTan
+        if ($tanRequest->getChallengeHhdUc()) {
+            $challengeImage = new TanRequestChallengeImage(
+                $tanRequest->getChallengeHhdUc()
+            );
+            $this->info("There is a challenge image.");
+            // Save the challenge image somewhere
+            // Alternative: HTML sample code
+            echo '<img src="data:' . htmlspecialchars($challengeImage->getMimeType()) . ';base64,' . base64_encode($challengeImage->getData()) . '" />' . PHP_EOL;
+        }
+
+        // Optional: Instead of printing the above to the console, you can relay the information (challenge and TAN medium)
+        // to the user in any other way (through your REST API, a push notification, ...). If waiting for the TAN requires
+        // you to interrupt this PHP session and the TAN will arrive in a fresh (HTTP/REST/...) request, you can do so:
+        if ($optionallyPersistEverything = false) {
+            $persistedAction = serialize($action);
+            $persistedFints = $this->fints->persist();
+
+            // These are two strings (watch out, they are NOT necessarily UTF-8 encoded), which you can store anywhere.
+            // This example code stores them in a text file, but you might write them to your database (use a BLOB, not a
+            // CHAR/TEXT field to allow for arbitrary encoding) or in some other storage (possibly base64-encoded to make it
+            // ASCII).
+            file_put_contents(storage_path('state.txt'), serialize([$persistedFints, $persistedAction]));
+        }
+
+        $tan = trim($this->ask('Please enter the TAN:'));
+
+        // Optional: If the state was persisted above, we can restore it now (imagine this is a new PHP session).
+        if ($optionallyPersistEverything) {
+            $restoredState = file_get_contents(storage_path('state.txt'));
+            list($persistedInstance, $persistedAction) = unserialize($restoredState);
+            $this->fints = new FinTsNew($this->options, $this->credentials, $persistedInstance);
+            $action = unserialize($persistedAction);
+        }
+
+        $this->info("Submitting TAN: $tan");
+        $this->fints->submitTan($action, $tan);
+    }
+
+    private function getFints() {
+        $this->fints = new FinTsNew($this->options, $this->credentials);
+        $this->fints->selectTanMode(942);
+
+        // Log in.
+        $login = $this->fints->login();
+        if ($login->needsTan()) {
+            $this->handleTan($login);
+        }
+
+        // Usage:
+        // $fints = require_once 'login.php';
+        return $this->fints;
+    }
+
 }

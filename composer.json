@@ -10,9 +10,9 @@
     }
   ],
   "require": {
-    "php": ">=7.1.0",
-    "janfoerste/php-fints": "~0.0",
-    "laravel/framework": "^5.4 | ^5.5"
+    "php": "^7.1.0",
+    "nemiah/php-fints": "^2.0",
+    "laravel/framework": "^7.1"
   },
   "require-dev": {
     "phpunit/phpunit": "~6.0"

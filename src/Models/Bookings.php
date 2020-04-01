@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * Model Bookings
  *
  * @property int id
- * @property string search
+ * @property string ref_iban
  * @property Carbon bookingdate
  * @property Carbon valutadate
  * @property float amount
@@ -29,7 +29,7 @@ class Bookings extends Model {
     use SoftDeletes;
 
     protected $table    = 'bookings';
-    protected $fillable = ['search','bookingdate','valutadate','amount','creditdebit','bookingtext','description1','structureddescription','bankcode','accountnumber','name'];
+    protected $fillable = ['ref_iban','bookingdate','valutadate','amount','creditdebit','bookingtext','description1','structureddescription','bankcode','accountnumber','name'];
     protected $dates    = ['bookingdate','valutadate','created_at','updated_at','deleted_at'];
     protected $casts    = ['structureddescription' => 'array'];
 }

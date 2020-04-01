@@ -8,7 +8,7 @@ New Entries are published as an event you can easily listen to, see [Usage](#Usa
 This package supports HBCI/FinTS, a german standard for communicating with bank institutes.
 
 ## Thank you
-A ton of thanks to janfoerste/php-fints and mschindler83/fints-hbci-php for providing such a nice library where I could easily put my work on top of it!
+A ton of thanks to nemiah/fints-hbci-php for providing and maintaining such a nice library where I could easily put my work on top of it!
 
 ## Install
 
@@ -40,10 +40,12 @@ Append these values to your .env file:
 ```shell
 # https://www.hbci-zka.de/institute/institut_auswahl.htm (use the PIN/TAN URL)
 # The page is in german, so: bank account=Bankleitzahl
+FHP_BANK_START="7 days ago"
 FHP_BANK_URL=
-FHP_BANK_PORT=
 FHP_BANK_CODE=
-FHP_ONLINE_BANKING_USE=RNAME=
+FHP_BANK_ACCOUNT=
+FHP_ONLINE_REGISTRATIONNO=
+FHP_ONLINE_BANKING_USERNAME=
 FHP_ONLINE_BANKING_PIN=
 ```
 
@@ -53,10 +55,11 @@ In some ServiceProvides `boot()` function you could simply listen to the events 
 
 ```php
 Event::listen('PKeidel\BankToLaravel\Events\Error', function (Error $entry) {
-    echo "Error occured: $entry->exception\n";
+    Log::error("BankToLaravel error: $entry->exception");
+    optional(Users::where('iban', $entry->data['ref_iban'])->first())->notify(new NewBankaccountBooking($entry));
 });
 
 Event::listen('PKeidel\BankToLaravel\Events\NewEntry', function (NewEntry $entry) {
-    Users::where('username', 'admin')->first()->sendViaTelegram(view('telegram.newbankentry', ['entry' => $entry]));
+    optional(Users::where('iban', $entry->data['ref_iban'])->first())->notify(new NewBankaccountBooking($entry));
 });
 ```
