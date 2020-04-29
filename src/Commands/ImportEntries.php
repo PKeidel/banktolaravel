@@ -8,10 +8,8 @@ use Exception;
 use Fhp\Action\GetSEPAAccounts;
 use Fhp\Action\GetStatementOfAccount;
 use Fhp\BaseAction;
-use Fhp\Credentials;
 use Fhp\CurlException;
 use Fhp\FinTsNew;
-use Fhp\FinTsOptions;
 use Fhp\Model\StatementOfAccount\Statement;
 use Fhp\Model\TanRequestChallengeImage;
 use Fhp\Protocol\ServerException;
@@ -35,20 +33,7 @@ class ImportEntries extends Command {
 	 */
 	protected $description = 'Reads booking informations from an bank account and saves it to a local table in the database';
 
-    private $options;
-    private $credentials;
     private $fints;
-
-    public function __construct() {
-        $this->options = new FinTsOptions();
-        $this->options->url = env('FHP_BANK_URL');
-        $this->options->bankCode = env('FHP_BANK_CODE');
-        $this->options->productName = env('FHP_ONLINE_REGISTRATIONNO');
-        $this->options->productVersion = '1.0';
-        $this->credentials = Credentials::create(env('FHP_ONLINE_BANKING_USERNAME'), decrypt(env('FHP_ONLINE_BANKING_PIN')));
-
-        parent::__construct();
-    }
 
     public function wasModelRecentlyCreated(Bookings $booking) {
         return Carbon::now()->diffInSeconds($booking->created_at) < 5;
@@ -183,7 +168,8 @@ class ImportEntries extends Command {
         if ($optionallyPersistEverything) {
             $restoredState = file_get_contents(storage_path('state.txt'));
             list($persistedInstance, $persistedAction) = unserialize($restoredState);
-            $this->fints = new FinTsNew($this->options, $this->credentials, $persistedInstance);
+            $this->fints = $this->getFints();
+            $this->fints->loadPersistedInstance($persistedInstance);
             $action = unserialize($persistedAction);
         }
 
@@ -192,7 +178,14 @@ class ImportEntries extends Command {
     }
 
     private function getFints() {
-        $this->fints = new FinTsNew($this->options, $this->credentials);
+        $this->fints = new FinTsNew(
+            env('FHP_BANK_URL'),
+            env('FHP_BANK_CODE'),
+            env('FHP_ONLINE_BANKING_USERNAME'),
+            decrypt(env('FHP_ONLINE_BANKING_PIN')),
+            env('FHP_ONLINE_REGISTRATIONNO'),
+            '1.0'
+        );
         $this->fints->selectTanMode(942);
 
         // Log in.

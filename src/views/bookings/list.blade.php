@@ -17,26 +17,26 @@
   <td>{{ __('updated_at') }}</td>
   <td>{{ __('deleted_at') }}</td>
 </tr>
-@set($sumIn, 0)
-@set($sumOut, 0)
-@set($month, '')
+@php $sumIn = 0; @endphp
+@php $sumOut = 0; @endphp
+@php $month = ''; @endphp
 @foreach($bookings as $b)
   @if(!$loop->first && $month != $b->bookingdate->format('m/Y'))
       <tr style="color:@if($sumOut > $sumIn)red @else green @endif">
         <td colspan="2">summe des Zeitraums: {{ $month }}</td>
         <td colspan="12">In: {{ $sumIn }}<br>Out: {{ $sumOut }}</td>
       </tr>
-      @set($sumIn, 0)
-      @set($sumOut, 0)
-  @endif
+    @php $sumIn = 0; @endphp
+    @php $sumOut = 0; @endphp
+@endif
 
-  @if($b->creditdebit == 'credit')
-    @set($sumIn, $sumIn + $b->amount)
-  @else
-    @set($sumOut, $sumOut + $b->amount)
-  @endif
+@if($b->creditdebit == 'credit')
+    @php $sumIn += $b->amount; @endphp
+@else
+    @php $sumOut += $b->amount; @endphp
+@endif
 
-  @set($month, $b->bookingdate->format('m/Y'))
+@php $month = $b->bookingdate->format('m/Y'); @endphp
   <tr>
   <td>{{ $b->id }}</td>
   <td>{{ $b->ref_iban }}</td>

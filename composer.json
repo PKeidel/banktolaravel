@@ -11,7 +11,7 @@
   ],
   "require": {
     "php": "^7.2.0",
-    "nemiah/php-fints": "^2.0",
+    "nemiah/php-fints": "2.1.0",
     "laravel/framework": "^7.1"
   },
   "require-dev": {
