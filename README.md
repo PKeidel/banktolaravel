@@ -38,15 +38,16 @@ $schedule->command('bank:import')->hourly();
 
 Append these values to your .env file:
 ```shell
-# https://www.hbci-zka.de/institute/institut_auswahl.htm (use the PIN/TAN URL)
-# The page is in german, so: bank account=Bankleitzahl
-FHP_BANK_START="7 days ago"
+# https://github.com/willuhn/hbci4java/blob/master/src/blz.properties
 FHP_BANK_URL=
 FHP_BANK_CODE=
-FHP_BANK_ACCOUNT=
 FHP_ONLINE_REGISTRATIONNO=
 FHP_ONLINE_BANKING_USERNAME=
-FHP_ONLINE_BANKING_PIN=
+FHP_ONLINE_BANKING_PIN_CMD="keyring get mybank.com myusername"
+# OR use decrypted PIN
+#FHP_ONLINE_BANKING_PIN=""
+FHP_BANK_START="14 days ago"
+FHP_BANK_ACCOUNT=
 ```
 
 Every time a new Entry is added to the database, an `PKeidel\BankToLaravel\Events\NewEntry` Event is fired.
@@ -54,11 +55,11 @@ Every time a new Entry is added to the database, an `PKeidel\BankToLaravel\Event
 In some ServiceProvides `boot()` function you could simply listen to the events and add some own logic like sending an E-Mail or notify you via some other way.
 
 ```php
-Event::listen('PKeidel\BankToLaravel\Events\Error', function (Error $error) {
+Event::listen(\PKeidel\BankToLaravel\Events\Error::class, function (Error $error) {
     Log::error("BankToLaravel error: $error->exception");
 });
 
-Event::listen('PKeidel\BankToLaravel\Events\NewEntry', function (NewEntry $entry) {
+Event::listen(\PKeidel\BankToLaravel\Events\NewEntry::class, function (NewEntry $entry) {
     optional(Users::where('iban', $entry->data['ref_iban'])->first())->notify(new NewBankaccountBooking($entry));
 });
 ```

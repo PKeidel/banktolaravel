@@ -2,14 +2,13 @@
 
 namespace PKeidel\BankToLaravel\Events;
 
+use Fhp\Model\SEPAAccount;
+use Fhp\Model\StatementOfAccount\Transaction;
+
 class NewEntry {
-
-	public $data = [];
-	public $saldo = null;
-
-	public function __construct($data, $saldo) {
-		$this->data = $data;
-		$this->saldo = $saldo;
-	}
-
+	public function __construct(
+        public readonly SEPAAccount $account,
+        public readonly Transaction $transaction,
+        public readonly float $saldo
+    ) {}
 }

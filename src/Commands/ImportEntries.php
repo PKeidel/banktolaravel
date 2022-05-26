@@ -9,8 +9,9 @@ use Fhp\Action\GetSEPAAccounts;
 use Fhp\Action\GetStatementOfAccount;
 use Fhp\BaseAction;
 use Fhp\CurlException;
-use Fhp\FinTsNew;
+use Fhp\Model\SEPAAccount;
 use Fhp\Model\StatementOfAccount\Statement;
+use Fhp\Model\StatementOfAccount\Transaction;
 use Fhp\Model\TanRequestChallengeImage;
 use Fhp\Protocol\ServerException;
 use Illuminate\Console\Command;
@@ -19,95 +20,76 @@ use PKeidel\BankToLaravel\Events\NewEntry;
 use PKeidel\BankToLaravel\Models\Bookings;
 
 class ImportEntries extends Command {
-	/**
-	 * The name and signature of the console command.
-	 *
-	 * @var string
-	 */
 	protected $signature = 'bank:import';
-
-	/**
-	 * The console command description.
-	 *
-	 * @var string
-	 */
 	protected $description = 'Reads booking informations from an bank account and saves it to a local table in the database';
 
     private $fints;
 
-    public function wasModelRecentlyCreated(Bookings $booking) {
-        return Carbon::now()->diffInSeconds($booking->created_at) < 5;
-    }
-
-    /**
-     * Execute the console command.
-     *
-     * @return mixed
-     */
     public function handle() {
-//        $this->info("checking bank account(s)...");
-
-        $fints = $this->getFints();
+        $this->createFints();
 
         $from = new DateTime(env('FHP_BANK_START', '7 day ago'));
         $to   = new DateTime();
+
+        $allowedAccounts = explode(',', env('FHP_BANK_ACCOUNT', ''));
+
         try {
             $getSepaAccounts = GetSEPAAccounts::create();
-            $fints->execute($getSepaAccounts);
+            $this->fints->execute($getSepaAccounts);
             if ($getSepaAccounts->needsTan()) {
-                $this->warn('TAN input required!');
                 $this->handleTan($getSepaAccounts);
             }
             $accounts = $getSepaAccounts->getAccounts();
             foreach($accounts as $account) {
-                if(empty(env('FHP_BANK_ACCOUNT')) || env('FHP_BANK_ACCOUNT') !== $account->getAccountNumber()) {
-//                    $this->info("Skipping account: " . $account->getAccountNumber());
+                if(!in_array($account->getAccountNumber(), $allowedAccounts, true)) {
                     continue;
                 }
 
-//                $this->info("Importing account: " . $account->getAccountNumber());
-
                 $getStatement = GetStatementOfAccount::create($account, $from, $to);
-                $fints->execute($getStatement);
-//                $this->info("  needsTan(): " . ($getStatement->needsTan() ? 'y' : 'n'));
+                $this->fints->execute($getStatement);
+
                 if ($getStatement->needsTan()) {
-                    $this->warn("TAN input required!");
+                    Log::info("TAN input required!");
                     $this->handleTan($getStatement);
                 }
 
                 $soa = $getStatement->getStatement();
                 foreach ($soa->getStatements() as $statement) {
                     $saldo = $statement->getCreditDebit() == Statement::CD_DEBIT ? 0 - $statement->getStartBalance() : $statement->getStartBalance();
-//                    $this->info($statement->getDate()->format('Y-m-d') . ": Start Saldo: $saldo");
                     foreach ($statement->getTransactions() as $transaction) {
-//                        $this->info("  - importing: {$transaction->getBookingDate()->format('Y-m-d')} {$transaction->getBookingText()} {$transaction->getCreditDebit()} {$transaction->getAmount()}");
-
-                        $booking = Bookings::updateOrCreate([
-                            'ref_iban' => $account->getIban(),
-                            'valutadate' => $transaction->getValutaDate(),
-                            'bookingdate' => $transaction->getBookingDate(),
-                            'amount' => $transaction->getAmount(),
-                            'creditdebit' => $transaction->getCreditDebit(),
-                            'bookingtext' => $transaction->getBookingText(),
-                            'accountnumber' => $transaction->getAccountNumber(),
-                            'bankcode' => $transaction->getBankCode(),
-                        ], [
-                            'description1' => $transaction->getDescription1(),
-                            'structureddescription' => $transaction->getStructuredDescription(),
-                            'name' => $transaction->getName(),
-                        ]);
-                        if($this->wasModelRecentlyCreated($booking)) {
-                            $this->info("    => this one was new, so fire an NewEntry event");
-                            event(new NewEntry($booking->toArray(), $saldo));
+                        if(env('FHP_SAVE_TO_DB', true)) {
+                            $booking = Bookings::updateOrCreate([
+                                'ref_iban' => $account->getIban(),
+                                'valutadate' => $transaction->getValutaDate(),
+                                'bookingdate' => $transaction->getBookingDate(),
+                                'amount' => $transaction->getAmount(),
+                                'creditdebit' => $transaction->getCreditDebit(),
+                                'bookingtext' => $transaction->getBookingText(),
+                                'accountnumber' => $transaction->getAccountNumber(),
+                                'bankcode' => $transaction->getBankCode(),
+                            ], [
+                                'description1' => $transaction->getDescription1(),
+                                'structureddescription' => $transaction->getStructuredDescription(),
+                                'name' => $transaction->getName(),
+                            ]);
+                            if($this->wasModelRecentlyCreated($booking)) {
+                                Log::info("    => this one was new, so fire an NewEntry event");
+                                $this->fireEvent($account, $transaction, $saldo);
+                            }
+                        } else {
+                            $this->fireEvent($account, $transaction, $saldo);
                         }
                     }
                 }
             }
         } catch (Exception $e) {
             Log::error($e);
-//            $this->warn("ERROR " . get_class($e) . " ({$e->getFile()}:{$e->getLine()}): " . $e->getMessage());
-//            $this->info($e);
+            echo $e::class . ': ' .  $e->getMessage() . PHP_EOL;
         }
+    }
+
+    public function wasModelRecentlyCreated(Bookings $booking): bool {
+        return Carbon::now()->diffInSeconds($booking->created_at) < 5;
     }
 
     /**
@@ -119,12 +101,6 @@ class ImportEntries extends Command {
      * may change these requirements over time, so just because your particular bank does not need a TAN for login today
      * does not mean that it stays that way.
      *
-     * The TAN can be provided it many different ways. Each application that uses the phpFinTS library has to implement
-     * its own way of asking users for a TAN, depending on its user interfaces. The implementation does not have to be in a
-     * function like this, it can be inlined with the calling code, or live elsewhere. The TAN can be obtained while the
-     * same PHP script is still running (i.e. handleTan() is a blocking function that only returns once the TAN is known),
-     * but it is also possible to interrupt the PHP execution entirely while asking for the TAN.
-     *
      * @param BaseAction $action Some action that requires a TAN.
      * @throws CurlException
      * @throws ServerException
@@ -132,9 +108,9 @@ class ImportEntries extends Command {
     public function handleTan(BaseAction $action) {
         // Find out what sort of TAN we need, tell the user about it.
         $tanRequest = $action->getTanRequest();
-        $this->info('The bank requested a TAN, asking: ' . $tanRequest->getChallenge());
+        Log::info('The bank requested a TAN, asking: ' . $tanRequest->getChallenge());
         if ($tanRequest->getTanMediumName() !== null) {
-            $this->info('Please use this device: ' . $tanRequest->getTanMediumName());
+            Log::info('Please use this device: ' . $tanRequest->getTanMediumName());
         }
 
         // Challenge Image for PhotoTan/ChipTan
@@ -142,10 +118,10 @@ class ImportEntries extends Command {
             $challengeImage = new TanRequestChallengeImage(
                 $tanRequest->getChallengeHhdUc()
             );
-            $this->info("There is a challenge image.");
+            Log::info("There is a challenge image.");
             // Save the challenge image somewhere
             // Alternative: HTML sample code
-            echo '<img src="data:' . htmlspecialchars($challengeImage->getMimeType()) . ';base64,' . base64_encode($challengeImage->getData()) . '" />' . PHP_EOL;
+            Log::info('<img src="data:' . htmlspecialchars($challengeImage->getMimeType()) . ';base64,' . base64_encode($challengeImage->getData()) . '" />');
         }
 
         // Optional: Instead of printing the above to the console, you can relay the information (challenge and TAN medium)
@@ -162,41 +138,53 @@ class ImportEntries extends Command {
             file_put_contents(storage_path('state.txt'), serialize([$persistedFints, $persistedAction]));
         }
 
-        $tan = trim($this->ask('Please enter the TAN:'));
+        $tan = trim(readline('Please enter the TAN:'));
 
         // Optional: If the state was persisted above, we can restore it now (imagine this is a new PHP session).
         if ($optionallyPersistEverything) {
             $restoredState = file_get_contents(storage_path('state.txt'));
-            list($persistedInstance, $persistedAction) = unserialize($restoredState);
-            $this->fints = $this->getFints();
+            [$persistedInstance, $persistedAction] = unserialize($restoredState);
+            $this->createFints();
             $this->fints->loadPersistedInstance($persistedInstance);
             $action = unserialize($persistedAction);
         }
 
-        $this->info("Submitting TAN: $tan");
+        Log::info("Submitting TAN: $tan");
         $this->fints->submitTan($action, $tan);
     }
 
-    private function getFints() {
-        $this->fints = new FinTsNew(
-            env('FHP_BANK_URL'),
-            env('FHP_BANK_CODE'),
+    private function createFints(): void {
+        // The configuration options up here are considered static wrt. the library's internal state and its requests.
+        // That is, even if you persist the FinTs instance, you need to be able to reproduce all this information from some
+        // application-specific storage (e.g. your database) in order to use the phpFinTS library.
+        $options = new \Fhp\Options\FinTsOptions();
+        $options->url = env('FHP_BANK_URL'); // HBCI / FinTS Url can be found here: https://www.hbci-zka.de/institute/institut_auswahl.htm (use the PIN/TAN URL)
+        $options->bankCode = env('FHP_BANK_CODE'); // Your bank code / Bankleitzahl
+        $options->productName = env('FHP_ONLINE_REGISTRATIONNO'); // The number you receive after registration / FinTS-Registrierungsnummer
+        $options->productVersion = '1.0'; // Your own Software product version
+
+        $pin = ($cmd = env('FHP_ONLINE_BANKING_PIN_CMD')) !== null ? trim(shell_exec($cmd)) : decrypt(env('FHP_ONLINE_BANKING_PIN'));
+
+        $credentials = \Fhp\Options\Credentials::create(
             env('FHP_ONLINE_BANKING_USERNAME'),
-            decrypt(env('FHP_ONLINE_BANKING_PIN')),
-            env('FHP_ONLINE_REGISTRATIONNO'),
-            '1.0'
+            $pin // This is NOT the PIN of your bank card!
         );
-        $this->fints->selectTanMode(942);
+
+        $this->fints = \Fhp\FinTs::new($options, $credentials);
+        $this->fints->selectTanMode(env('FHP_TAN_MODE', 944), null);
 
         // Log in.
         $login = $this->fints->login();
         if ($login->needsTan()) {
             $this->handleTan($login);
         }
-
-        // Usage:
-        // $fints = require_once 'login.php';
-        return $this->fints;
     }
 
+    public function fireEvent(SEPAAccount $account, Transaction $transaction, float|int $saldo): void {
+        \event(new NewEntry(
+            $account,
+            $transaction,
+            $saldo
+        ));
+    }
 }
