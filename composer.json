@@ -16,7 +16,7 @@
     "nemiah/php-fints": "3.3.*"
   },
   "require-dev": {
-    "phpunit/phpunit": "^9.5"
+    "phpunit/phpunit": "^10.0"
   },
   "autoload": {
     "psr-4": {
