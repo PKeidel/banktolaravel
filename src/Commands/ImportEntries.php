@@ -4,26 +4,41 @@ namespace PKeidel\BankToLaravel\Commands;
 
 use Carbon\Carbon;
 use DateTime;
-use Exception;
-use Fhp\Action\GetSEPAAccounts;
-use Fhp\Action\GetStatementOfAccount;
+use Fhp\Action;
 use Fhp\BaseAction;
 use Fhp\CurlException;
+use Fhp\FinTs;
 use Fhp\Model\SEPAAccount;
 use Fhp\Model\StatementOfAccount\Statement;
 use Fhp\Model\StatementOfAccount\Transaction;
 use Fhp\Model\TanRequestChallengeImage;
+use Fhp\Options\Credentials;
+use Fhp\Options\FinTsOptions;
 use Fhp\Protocol\ServerException;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
+use PKeidel\BankToLaravel\Events\NewBalance;
 use PKeidel\BankToLaravel\Events\NewEntry;
 use PKeidel\BankToLaravel\Models\Bookings;
+use function event;
 
 class ImportEntries extends Command {
 	protected $signature = 'bank:import';
 	protected $description = 'Reads booking informations from an bank account and saves it to a local table in the database';
 
-    private $fints;
+    private FinTs $fints;
+
+    private function getBalancesFor(SEPAAccount $account) {
+        $getBalance = Action\GetBalance::create($account, true);
+        $this->fints->execute($getBalance);
+        if ($getBalance->needsTan()) {
+            $this->handleTan($getBalance);
+        }
+
+        foreach ($getBalance->getBalances() as $hisal) {
+            event(new NewBalance($hisal));
+        }
+    }
 
     public function handle() {
         $this->createFints();
@@ -31,25 +46,29 @@ class ImportEntries extends Command {
         $from = new DateTime(env('FHP_BANK_START', '7 day ago'));
         $to   = new DateTime();
 
-        $allowedAccounts = explode(',', env('FHP_BANK_ACCOUNT', ''));
+        $allowedAccounts = explode(',', $envAccounts = env('FHP_BANK_ACCOUNT', ''));
+
+        $this->warn("Accounts: $envAccounts");
 
         try {
-            $getSepaAccounts = GetSEPAAccounts::create();
+            $getSepaAccounts = Action\GetSEPAAccounts::create();
             $this->fints->execute($getSepaAccounts);
             if ($getSepaAccounts->needsTan()) {
                 $this->handleTan($getSepaAccounts);
             }
             $accounts = $getSepaAccounts->getAccounts();
-            foreach($accounts as $account) {
-                if(!in_array($account->getAccountNumber(), $allowedAccounts, true)) {
-                    continue;
-                }
 
-                $getStatement = GetStatementOfAccount::create($account, $from, $to);
+            // This will fetch balances for all accounts of the user
+            $this->getBalancesFor($accounts[0]);
+
+            foreach($accounts as $account) {
+                $this->info("Checking Account: " . $account->getIban());
+
+                $getStatement = Action\GetStatementOfAccount::create($account, $from, $to);
                 $this->fints->execute($getStatement);
 
                 if ($getStatement->needsTan()) {
-                    Log::info("TAN input required!");
+                    $this->info("TAN input required!");
                     $this->handleTan($getStatement);
                 }
 
@@ -82,9 +101,9 @@ class ImportEntries extends Command {
                     }
                 }
             }
-        } catch (Exception $e) {
-            Log::error($e);
-            echo $e::class . ': ' .  $e->getMessage() . PHP_EOL;
+        } catch (\Throwable $t) {
+            Log::error($t);
+            $this->error($t::class . ': ' .  $t->getMessage());
         }
     }
 
@@ -157,7 +176,7 @@ class ImportEntries extends Command {
         // The configuration options up here are considered static wrt. the library's internal state and its requests.
         // That is, even if you persist the FinTs instance, you need to be able to reproduce all this information from some
         // application-specific storage (e.g. your database) in order to use the phpFinTS library.
-        $options = new \Fhp\Options\FinTsOptions();
+        $options = new FinTsOptions();
         $options->url = env('FHP_BANK_URL'); // HBCI / FinTS Url can be found here: https://www.hbci-zka.de/institute/institut_auswahl.htm (use the PIN/TAN URL)
         $options->bankCode = env('FHP_BANK_CODE'); // Your bank code / Bankleitzahl
         $options->productName = env('FHP_ONLINE_REGISTRATIONNO'); // The number you receive after registration / FinTS-Registrierungsnummer
@@ -165,13 +184,13 @@ class ImportEntries extends Command {
 
         $pin = ($cmd = env('FHP_ONLINE_BANKING_PIN_CMD')) !== null ? trim(shell_exec($cmd)) : decrypt(env('FHP_ONLINE_BANKING_PIN'));
 
-        $credentials = \Fhp\Options\Credentials::create(
+        $credentials = Credentials::create(
             env('FHP_ONLINE_BANKING_USERNAME'),
             $pin // This is NOT the PIN of your bank card!
         );
 
-        $this->fints = \Fhp\FinTs::new($options, $credentials);
-        $this->fints->selectTanMode(env('FHP_TAN_MODE', 944), null);
+        $this->fints = FinTs::new($options, $credentials);
+        $this->fints->selectTanMode(env('FHP_TAN_MODE', 944));
 
         // Log in.
         $login = $this->fints->login();
@@ -181,7 +200,7 @@ class ImportEntries extends Command {
     }
 
     public function fireEvent(SEPAAccount $account, Transaction $transaction, float|int $saldo): void {
-        \event(new NewEntry(
+        event(new NewEntry(
             $account,
             $transaction,
             $saldo
