@@ -15,9 +15,6 @@
     "illuminate/console": "^10.3",
     "nemiah/php-fints": "3.3.*"
   },
-  "require-dev": {
-    "phpunit/phpunit": "^9.5"
-  },
   "autoload": {
     "psr-4": {
       "PKeidel\\BankToLaravel\\": "src/"
